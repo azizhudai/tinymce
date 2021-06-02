@@ -25,7 +25,7 @@ export interface CustomDetail<A> {
 
 const baseBehaviour = 'alloy.base.behaviour';
 
-const toInfo = <A>(spec: ComponentDetail): Result<CustomDetail<A>, any> => ValueSchema.asRaw('custom.definition', ValueSchema.objOf([
+const schema = ValueSchema.objOf([
   FieldSchema.field('dom', 'dom', FieldPresence.strict(), ValueSchema.objOf([
     // Note, no children.
     FieldSchema.strict('tag'),
@@ -61,7 +61,9 @@ const toInfo = <A>(spec: ComponentDetail): Result<CustomDetail<A>, any> => Value
   ),
 
   FieldSchema.option('domModification')
-]), spec);
+]);
+
+const toInfo = <A>(spec: ComponentDetail): Result<CustomDetail<A>, any> => ValueSchema.asRaw('custom.definition', schema, spec);
 
 const toDefinition = (detail: CustomDetail<any>): DomDefinitionDetail =>
   // EFFICIENCY: Consider not merging here.
