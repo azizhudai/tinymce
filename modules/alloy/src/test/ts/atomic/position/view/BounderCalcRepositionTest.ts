@@ -1,5 +1,6 @@
 import { UnitTest } from '@ephox/bedrock-client';
-import Jsc from '@ephox/wrap-jsverify';
+import { assert } from 'chai';
+import * as fc from 'fast-check';
 
 import { bounds as makeBounds } from 'ephox/alloy/alien/Boxes';
 import * as Bounder from 'ephox/alloy/positioning/view/Bounder';
@@ -8,27 +9,30 @@ UnitTest.test('BounderCalcRepositionTest', () => {
 
   const maxBounds = 2000;
   const minBounds = 0;
-  const zeroableArb = Jsc.integer(minBounds, maxBounds);
+  const zeroableArb = fc.integer(minBounds, maxBounds);
+  const bubbleArb = fc.integer(-10, 10);
 
-  const arbTestCase = Jsc.bless({
-    generator: zeroableArb.generator.flatMap(
-      (boundsX: number) => zeroableArb.generator.flatMap(
-        (boundsY: number) => Jsc.integer(boundsX, maxBounds).generator.flatMap(
-          (newX: number) => Jsc.integer(boundsY, maxBounds).generator.flatMap(
-            (newY: number) => zeroableArb.generator.flatMap(
-              (width: number) => zeroableArb.generator.flatMap(
-                (height: number) => Jsc.integer(newX + width, maxBounds).generator.flatMap(
-                  (boundsW: number) => Jsc.integer(newY + height, maxBounds).generator.map(
-                    (boundsH: number) => ({
-                      newX,
-                      newY,
+  const arbTestCase = zeroableArb.chain((boundsX) =>
+    zeroableArb.chain((boundsY) =>
+      fc.integer(boundsX, maxBounds).chain((x) =>
+        fc.integer(boundsY, maxBounds).chain((y) =>
+          zeroableArb.chain((width) =>
+            zeroableArb.chain((height) =>
+              fc.integer(x + width, x + maxBounds).chain((boundsW) =>
+                fc.integer(y + height, y + maxBounds).chain((boundsH) =>
+                  bubbleArb.chain((bubbleLeft) =>
+                    bubbleArb.map((bubbleTop) => ({
+                      x,
+                      y,
                       width,
                       height,
                       boundsX,
                       boundsY,
                       boundsW,
-                      boundsH
-                    })
+                      boundsH,
+                      bubbleLeft,
+                      bubbleTop
+                    }))
                   )
                 )
               )
@@ -37,24 +41,21 @@ UnitTest.test('BounderCalcRepositionTest', () => {
         )
       )
     )
-  });
-
-  Jsc.property(
-    'Check that all values have something visible within bounds',
-    arbTestCase,
-    (input: { newX: number; newY: number; width: number; height: number; boundsX: number; boundsY: number; boundsW: number; boundsH: number}) => {
-      const bounds = makeBounds(input.boundsX, input.boundsY, input.boundsW, input.boundsH);
-      const output = Bounder.calcReposition(input.newX, input.newY, input.width, input.height, bounds);
-
-      const xIsVisible = output.limitX <= (bounds.right - input.width) && output.limitX >= bounds.x;
-      const yIsVisible = output.limitY <= (bounds.bottom - input.height) && output.limitY >= bounds.y;
-      if (!xIsVisible) {
-        return 'X is not inside bounds. Returned: ' + JSON.stringify(output);
-      } else if (!yIsVisible) {
-        return 'Y is not inside bounds. Returned: ' + JSON.stringify(output);
-      } else {
-        return true;
-      }
-    }
   );
+
+  fc.assert(fc.property(arbTestCase, (input) => {
+    const { boundsX, boundsY, boundsW, boundsH, bubbleLeft, bubbleTop } = input;
+    const bounds = makeBounds(boundsX, boundsY, boundsW, boundsH);
+    const layoutBounds = makeBounds(boundsX + bubbleLeft, boundsY + bubbleTop, boundsW - bubbleLeft, boundsH - bubbleTop);
+
+    const { x, y, width, height } = input;
+    const box = makeBounds(x, y, width, height);
+    const output = Bounder.calcReposition(box, layoutBounds, bounds);
+
+    const outputString = JSON.stringify(output);
+    assert.isAtLeast(output.x, bounds.x, 'X is not inside bounds. Returned: ' + outputString);
+    assert.isAtMost(output.right, bounds.right, 'X is not inside bounds. Returned: ' + outputString);
+    assert.isAtLeast(output.y, bounds.y, 'Y is not inside bounds. Returned: ' + outputString);
+    assert.isAtMost(output.bottom, bounds.bottom, 'Y is not inside bounds. Returned: ' + outputString);
+  }));
 });

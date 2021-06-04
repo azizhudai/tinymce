@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 - Added new `focus` property to the `Blocking` behaviour config.
+- Added a new `preserve` layout option to `LayoutInside` to preserve the previous placement inside the component.
 
 ### Changed
 - Changed disconnected components to log a warning instead of throwing an error when triggering or broadcasting events.
+
+### Fixed
+- Fixed a number of positioning bugs when using an "inside" layout, especially any that renders at the bottom.
 
 ## 8.2.0 - 2021-05-06
 

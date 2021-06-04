@@ -1,10 +1,12 @@
 import { Adt, Arr, Fun, Num } from '@ephox/katamari';
+import { SugarElement } from '@ephox/sugar';
 
 import * as Boxes from '../../alien/Boxes';
 import { Bubble } from '../layout/Bubble';
 import * as Direction from '../layout/Direction';
 import * as LayoutBounds from '../layout/LayoutBounds';
 import { AnchorBox, AnchorElement, AnchorLayout } from '../layout/LayoutTypes';
+import * as Placement from '../layout/Placement';
 import { RepositionDecision } from './Reposition';
 import { SpotInfo } from './SpotInfo';
 
@@ -20,11 +22,9 @@ export interface BounderAttemptAdt {
   log: (label: string) => void;
 }
 
-interface RepositionResult {
+interface PositionResult {
   readonly originInBounds: boolean;
   readonly sizeInBounds: boolean;
-  readonly limitX: number;
-  readonly limitY: number;
   readonly deltaW: number;
   readonly deltaH: number;
 }
@@ -37,41 +37,72 @@ const adt: {
   { nofit: [ 'reposition', 'deltaW', 'deltaH' ] }
 ]);
 
-const calcReposition = (newX: number, newY: number, width: number, height: number, bounds: Boxes.Bounds): RepositionResult => {
-  const boundsX = bounds.x;
-  const boundsY = bounds.y;
-  const boundsWidth = bounds.width;
-  const boundsHeight = bounds.height;
+/**
+ * This will attempt to calculate and adjust the position of the box so that is stays within the specified bounds.
+ * The end result will be a new restricted box of where it can safely be placed within the bounds as per the rules below.
+ *
+ * Note: There are two bounds that we need to account for when repositioning the box:
+ *  - `winBounds` is the absolute bounds that we should never escape from. It in most cases will be the window viewport,
+ *     but sometimes might be custom.
+ *  - `layoutBounds` is the restricted bounds that correlate to the layout and anchor point. It will be a smaller box
+ *     within the window bounds and is used to ensure the element isn't positioned over the anchor. We can escape this bounds
+ *     but only by whatever the "bubble" offset is (ie to support a "negative" bubble).
+ */
+const calcReposition = (box: Boxes.Bounds, layoutBounds: Boxes.Bounds, winBounds: Boxes.Bounds): Boxes.Bounds => {
+  const { x: winBoundsX, y: winBoundsY, right: winBoundsRight, bottom: winBoundsBottom } = winBounds;
+  const { x: layoutBoundsX, y: layoutBoundsY, right: layoutBoundsRight, bottom: layoutBoundsBottom } = layoutBounds;
+  const { x, y, width, height } = box;
+
+  // Determine the max left, top, right and bottom coordinates
+  const minX = Math.max(layoutBoundsX, winBoundsX);
+  const minY = Math.max(layoutBoundsY, winBoundsY);
+  const maxRight = Math.min(layoutBoundsRight, winBoundsRight);
+  const maxBottom = Math.min(layoutBoundsBottom, winBoundsBottom);
+
+  // measure the maximum x and y taking into account the height and width of the element
+  const maxX = Math.max(minX, maxRight - width);
+  const maxY = Math.max(minY, maxBottom - height);
+
+  // Futz with the X value to ensure that we're not off the left or right of the screen
+  const restrictedX = Num.clamp(x, minX, maxX);
+  // Futz with the Y value to ensure that we're not off the top or bottom of the screen
+  const restrictedY = Num.clamp(y, minY, maxY);
+
+  // Determine the new height and width based on the restricted X/Y to keep the element in bounds
+  const restrictedWidth = Math.min(restrictedX + width, maxRight) - restrictedX;
+  const restrictedHeight = Math.min(restrictedY + height, maxBottom) - restrictedY;
+
+  return Boxes.bounds(restrictedX, restrictedY, restrictedWidth, restrictedHeight);
+};
+
+/**
+ * This will attempt to determine if the box will fit within the specified bounds or if it needs to be repositioned.
+ * It will return the following details:
+ *  - if the original rect was in bounds (originInBounds & sizeInBounds). This is used to determine if we fitted
+ *    without having to make adjustments.
+ *  - the height and width deltas in relation to how much height/width would be visible in the original location.
+ */
+const determinePosition = (box: Boxes.Bounds, bounds: Boxes.Bounds): PositionResult => {
+  const { x: boundsX, y: boundsY, right: boundsRight, bottom: boundsBottom } = bounds;
+  const { x, y, right, bottom, width, height } = box;
 
   // simple checks for "is the top left inside the view"
-  const xInBounds = newX >= boundsX;
-  const yInBounds = newY >= boundsY;
+  const xInBounds = x >= boundsX;
+  const yInBounds = y >= boundsY;
   const originInBounds = xInBounds && yInBounds;
 
   // simple checks for "is the bottom right inside the view"
-  const xFit = (newX + width) <= (boundsX + boundsWidth);
-  const yFit = (newY + height) <= (boundsY + boundsHeight);
-  const sizeInBounds = xFit && yFit;
+  const rightInBounds = right <= boundsRight;
+  const bottomInBounds = bottom <= boundsBottom;
+  const sizeInBounds = rightInBounds && bottomInBounds;
 
-  // measure how much of the width and height are visible. deltaW isn't necessary in the fit case but it's cleaner to read here.
-  const deltaW = Math.abs(Math.min(width, xInBounds ? boundsX + boundsWidth - newX : boundsX - (newX + width)));
-  const deltaH = Math.abs(Math.min(height, yInBounds ? boundsY + boundsHeight - newY : boundsY - (newY + height)));
-
-  // measure the maximum x and y, taking into account the height and width of the element
-  const maxX = Math.max(bounds.x, bounds.right - width);
-  const maxY = Math.max(bounds.y, bounds.bottom - height);
-
-  // Futz with the X value to ensure that we're not off the left or right of the screen
-  // NOTE: bounds.x() is 0 in repartee here.
-  const limitX = Num.clamp(newX, bounds.x, maxX);
-  // Futz with the Y value to ensure that we're not off the top or bottom of the screen
-  const limitY = Num.clamp(newY, bounds.y, maxY);
+  // measure how much of the width and height are visible
+  const deltaW = Math.min(width, xInBounds ? boundsRight - x : right - boundsX);
+  const deltaH = Math.min(height, yInBounds ? boundsBottom - y : bottom - boundsY);
 
   return {
     originInBounds,
     sizeInBounds,
-    limitX,
-    limitY,
     deltaW,
     deltaH
   };
@@ -80,69 +111,64 @@ const calcReposition = (newX: number, newY: number, width: number, height: numbe
 const attempt = (candidate: SpotInfo, width: number, height: number, bounds: Boxes.Bounds): BounderAttemptAdt => {
   const candidateX = candidate.x;
   const candidateY = candidate.y;
-  const bubbleOffsets = candidate.bubble.offset;
-  const bubbleLeft = bubbleOffsets.left;
-  const bubbleTop = bubbleOffsets.top;
+  const bubbleOffset = candidate.bubble.offset;
 
   // adjust the bounds to account for the layout and bubble restrictions
-  const adjustedBounds = LayoutBounds.adjustBounds(bounds, candidate.boundsRestriction, bubbleOffsets);
-  const boundsY = adjustedBounds.y;
-  const boundsBottom = adjustedBounds.bottom;
-  const boundsX = adjustedBounds.x;
-  const boundsRight = adjustedBounds.right;
+  const layoutBounds = LayoutBounds.calcBounds(bounds, candidate.restriction, bubbleOffset);
 
   // candidate position is excluding the bubble, so add those values as well
-  const newX = candidateX + bubbleLeft;
-  const newY = candidateY + bubbleTop;
+  const newX = candidateX + bubbleOffset.left;
+  const newY = candidateY + bubbleOffset.top;
+  const box = Boxes.bounds(newX, newY, width, height);
 
-  const { originInBounds, sizeInBounds, limitX, limitY, deltaW, deltaH } = calcReposition(newX, newY, width, height, adjustedBounds);
+  // determine the position of the box in relation to the bounds
+  const { originInBounds, sizeInBounds, deltaW, deltaH } = determinePosition(box, layoutBounds);
 
-  // TBIO-3367 + TBIO-3387:
+  // restrict the box if it won't fit in the bounds
+  const fits = originInBounds && sizeInBounds;
+  const fittedBox = fits ? box : calcReposition(box, layoutBounds, bounds);
+
   // Futz with the "height" of the popup to ensure if it doesn't fit it's capped at the available height.
-  // As of TBIO-4291, we provide all available space for both up and down.
-  const upAvailable = Fun.constant((limitY + deltaH) - boundsY);
-  const downAvailable = Fun.constant(boundsBottom - limitY);
+  const upAvailable = Fun.constant(fittedBox.bottom - bounds.y);
+  const downAvailable = Fun.constant(bounds.bottom - fittedBox.y);
   const maxHeight = Direction.cataVertical(candidate.direction, downAvailable, /* middle */ downAvailable, upAvailable);
 
-  const westAvailable = Fun.constant((limitX + deltaW) - boundsX);
-  const eastAvailable = Fun.constant(boundsRight - limitX);
+  // Futz with the "width" of the popup to ensure if it doesn't fit it's capped at the available width.
+  const westAvailable = Fun.constant(fittedBox.right - bounds.x);
+  const eastAvailable = Fun.constant(bounds.right - fittedBox.x);
   const maxWidth = Direction.cataHorizontal(candidate.direction, eastAvailable, /* middle */ eastAvailable, westAvailable);
 
   const reposition: RepositionDecision = {
-    x: limitX,
-    y: limitY,
-    width: deltaW,
-    height: deltaH,
+    rect: fittedBox,
     maxHeight,
     maxWidth,
     direction: candidate.direction,
+    placement: candidate.placement,
     classes: {
       on: candidate.bubble.classesOn,
       off: candidate.bubble.classesOff
     },
     label: candidate.label,
-    candidateYforTest: newY
+    testY: newY
   };
 
   // useful debugging that I don't want to lose
-  // console.log(candidate.label());
-  // console.log('xfit', (boundsX + boundsWidth), ',', (newX + width), ',', newX);
-  // console.log('yfit', (boundsY + boundsHeight), ',', (newY + height), ',', newY, ',', height);
+  // console.log(candidate.label);
   // console.table([{
   //   newY,
-  //   limitY,
-  //   boundsY,
-  //   boundsBottom,
+  //   limitY: fittedBox.y,
+  //   boundsY: bounds.y,
+  //   boundsBottom: bounds.bottom,
   //   newX,
-  //   limitX,
-  //   boundsX,
-  //   boundsRight,
-  //   candidateX: candidate.x(),
-  //   candidateY: candidate.y(),
+  //   limitX: fittedBox.x,
+  //   boundsX: bounds.x,
+  //   boundsRight: bounds.right,
+  //   candidateX: candidate.x,
+  //   candidateY: candidate.y,
   //   width,
   //   height
   // }]);
-  // console.log('y', yInBounds, yFit, '\t', Math.round(deltaH), '\t', (boundsY === 0 ? '000' : Math.round(boundsY)), '\t', Math.round(boundsHeight), '\t', Math.round(candidate.y()), '\t', Math.round(newY), '\t', height);
+  // console.log('maxwidth:', deltaW, maxWidth);
   // console.log('maxheight:', deltaH, maxHeight);
   // console.log('originInBounds:', originInBounds);
   // console.log('sizeInBounds:', sizeInBounds);
@@ -150,7 +176,7 @@ const attempt = (candidate: SpotInfo, width: number, height: number, bounds: Box
 
   // Take special note that we don't use the futz values in the nofit case; whether this position is a good fit is separate
   // to ensuring that if we choose it the popup is actually on screen properly.
-  return originInBounds && sizeInBounds ? adt.fit(reposition) : adt.nofit(reposition, deltaW, deltaH);
+  return fits || candidate.alwaysFit ? adt.fit(reposition) : adt.nofit(reposition, deltaW, deltaH);
 };
 
 /**
@@ -162,11 +188,11 @@ const attempt = (candidate: SpotInfo, width: number, height: number, bounds: Box
  * bubbles: the bubbles for the popup (see api.Bubble)
  * bounds: the screen
  */
-const attempts = (candidates: AnchorLayout[], anchorBox: AnchorBox, elementBox: AnchorElement, bubbles: Bubble, bounds: Boxes.Bounds): RepositionDecision => {
+const attempts = (element: SugarElement<HTMLElement>, candidates: AnchorLayout[], anchorBox: AnchorBox, elementBox: AnchorElement, bubbles: Bubble, bounds: Boxes.Bounds): RepositionDecision => {
   const panelWidth = elementBox.width;
   const panelHeight = elementBox.height;
   const attemptBestFit = (layout: AnchorLayout, reposition: RepositionDecision, deltaW: number, deltaH: number) => {
-    const next: SpotInfo = layout(anchorBox, elementBox, bubbles);
+    const next: SpotInfo = layout(anchorBox, elementBox, bubbles, element);
     const attemptLayout = attempt(next, panelWidth, panelHeight, bounds);
 
     // unwrapping fit only to rewrap seems... silly
@@ -189,19 +215,17 @@ const attempts = (candidates: AnchorLayout[], anchorBox: AnchorBox, elementBox: 
     },
     // fold base case: No candidates, it's never going to be correct, so do whatever
     adt.nofit({
-      x: anchorBox.x,
-      y: anchorBox.y,
-      width: elementBox.width,
-      height: elementBox.height,
+      rect: anchorBox,
       maxHeight: elementBox.height,
       maxWidth: elementBox.width,
       direction: Direction.southeast(),
+      placement: Placement.southeast,
       classes: {
         on: [],
         off: []
       },
       label: 'none',
-      candidateYforTest: anchorBox.y
+      testY: anchorBox.y
     }, -1, -1)
   );
 

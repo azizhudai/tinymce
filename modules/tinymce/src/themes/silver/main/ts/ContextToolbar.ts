@@ -10,9 +10,9 @@ import {
   Layout, LayoutInside, MaxHeight, MaxWidth, Positioning
 } from '@ephox/alloy';
 import { InlineContent, Toolbar } from '@ephox/bridge';
-import { Arr, Cell, Fun, Id, Merger, Obj, Optional, Thunk } from '@ephox/katamari';
+import { Arr, Fun, Id, Merger, Obj, Optional, Thunk } from '@ephox/katamari';
 import { PlatformDetection } from '@ephox/sand';
-import { Css, Focus, Scroll, SugarBody, SugarElement } from '@ephox/sugar';
+import { Compare, Css, Focus, Scroll, SugarBody, SugarElement } from '@ephox/sugar';
 import Editor from 'tinymce/core/api/Editor';
 import Delay from 'tinymce/core/api/util/Delay';
 import { getToolbarMode, ToolbarMode } from './api/Settings';
@@ -51,22 +51,25 @@ const anchorOverrides = {
   maxWidthFunction: MaxWidth.expandable()
 };
 
-// On desktop we prioritise north-then-south because it's cleaner, but on mobile we prioritise south to try to avoid overlapping with native context toolbars
-const desktopAnchorSpecLayouts = {
-  onLtr: () => [ Layout.north, Layout.south, Layout.northeast, Layout.southeast, Layout.northwest, Layout.southwest,
-    LayoutInside.north, LayoutInside.south, LayoutInside.northeast, LayoutInside.southeast, LayoutInside.northwest, LayoutInside.southwest ],
-  onRtl: () => [ Layout.north, Layout.south, Layout.northwest, Layout.southwest, Layout.northeast, Layout.southeast,
-    LayoutInside.north, LayoutInside.south, LayoutInside.northwest, LayoutInside.southwest, LayoutInside.northeast, LayoutInside.southeast ]
+const getAnchorSpec = (mobile: boolean, elem: Optional<SugarElement<HTMLElement>>, lastElem: Optional<SugarElement<Element>>) => {
+  // If anchoring to the same element, reuse the last layout. However if we're anchoring to a new element then layout to the north.
+  const insideLayout = elem.equals_(lastElem, Compare.eq) ? LayoutInside.preserve : LayoutInside.north;
+
+  // On desktop we prioritise north-then-south because it's cleaner, but on mobile we prioritise south to try to avoid overlapping with native context toolbars
+  const desktopAnchorSpecLayouts = {
+    onLtr: () => [ Layout.north, Layout.south, Layout.northeast, Layout.southeast, Layout.northwest, Layout.southwest, insideLayout ],
+    onRtl: () => [ Layout.north, Layout.south, Layout.northwest, Layout.southwest, Layout.northeast, Layout.southeast, insideLayout ]
+  };
+
+  const mobileAnchorSpecLayouts = {
+    onLtr: () => [ Layout.south, Layout.southeast, Layout.southwest, Layout.northeast, Layout.northwest, Layout.north, insideLayout ],
+    onRtl: () => [ Layout.south, Layout.southwest, Layout.southeast, Layout.northwest, Layout.northeast, Layout.north, insideLayout ]
+  };
+
+  return mobile ? mobileAnchorSpecLayouts : desktopAnchorSpecLayouts;
 };
 
-const mobileAnchorSpecLayouts = {
-  onLtr: () => [ Layout.south, Layout.southeast, Layout.southwest, Layout.northeast, Layout.northwest, Layout.north,
-    LayoutInside.north, LayoutInside.south, LayoutInside.northeast, LayoutInside.southeast, LayoutInside.northwest, LayoutInside.southwest ],
-  onRtl: () => [ Layout.south, Layout.southwest, Layout.southeast, Layout.northwest, Layout.northeast, Layout.north,
-    LayoutInside.north, LayoutInside.south, LayoutInside.northwest, LayoutInside.southwest, LayoutInside.northeast, LayoutInside.southeast ]
-};
-
-const getAnchorLayout = (position: InlineContent.ContextPosition, isTouch: boolean): Partial<AnchorSpec> => {
+const getAnchorLayout = (position: InlineContent.ContextPosition, isTouch: boolean, elem: Optional<SugarElement<HTMLElement>>, lastElem: Optional<SugarElement<Element>>): Partial<AnchorSpec> => {
   if (position === 'line') {
     return {
       bubble: Bubble.nu(bubbleSize, 0, bubbleAlignments),
@@ -79,7 +82,7 @@ const getAnchorLayout = (position: InlineContent.ContextPosition, isTouch: boole
   } else {
     return {
       bubble: Bubble.nu(0, bubbleSize, bubbleAlignments),
-      layouts: isTouch ? mobileAnchorSpecLayouts : desktopAnchorSpecLayouts,
+      layouts: getAnchorSpec(isTouch, elem, lastElem),
       overrides: anchorOverrides
     };
   }
@@ -87,6 +90,8 @@ const getAnchorLayout = (position: InlineContent.ContextPosition, isTouch: boole
 
 const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent, extras: Extras) => {
   const isTouch = PlatformDetection.detect().deviceType.isTouch;
+  let lastAnchor = Optional.none<AnchorSpec>();
+  let lastElement = Optional.none<SugarElement<Element>>();
 
   const contextbar = GuiFactory.build(
     renderContextToolbar({
@@ -103,9 +108,9 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
   const isRangeOverlapping = (aTop: number, aBottom: number, bTop: number, bBottom: number) => Math.max(aTop, bTop) <= Math.min(aBottom, bBottom);
 
   const getLastElementVerticalBound = () => {
-    const nodeBounds = lastElement.get()
-      .filter((ele) => SugarBody.inBody(SugarElement.fromDom(ele)))
-      .map((ele) => ele.getBoundingClientRect())
+    const nodeBounds = lastElement
+      .filter(SugarBody.inBody)
+      .map((ele) => ele.dom.getBoundingClientRect())
       .getOrThunk(() => editor.selection.getRng().getBoundingClientRect());
 
     // Translate to the top level document, as nodeBounds is relative to the iframe viewport
@@ -136,7 +141,7 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
   };
 
   const close = () => {
-    lastAnchor.set(Optional.none());
+    lastAnchor = Optional.none();
     InlineView.hide(contextbar);
   };
 
@@ -146,7 +151,7 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
 
   // FIX: make a lot nicer.
   const hideOrRepositionIfNecessary = () => {
-    lastAnchor.get().each((anchor) => {
+    lastAnchor.each((anchor) => {
       const contextBarEle = contextbar.element;
       Css.remove(contextBarEle, 'display');
       if (shouldContextToolbarHide()) {
@@ -156,10 +161,6 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
       }
     });
   };
-
-  const lastAnchor = Cell(Optional.none<AnchorSpec>());
-  const lastElement = Cell(Optional.none<Element>());
-  const timer = Cell(null);
 
   const wrapInPopDialog = (toolbarSpec: AlloySpec) => ({
     dom: {
@@ -236,12 +237,12 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
     const anchorage = position === 'node' ? extras.backstage.shared.anchors.node(element) : extras.backstage.shared.anchors.cursor();
     return Merger.deepMerge(
       anchorage,
-      getAnchorLayout(position, isTouch())
+      getAnchorLayout(position, isTouch(), element, lastElement)
     );
   };
 
   const launchContext = (toolbarApi: Array<ContextTypes>, elem: Optional<Element>) => {
-    clearTimer();
+    launchContextToolbar.stop();
 
     // If a mobile context menu is open, don't launch else they'll probably overlap. For android, specifically.
     if (isTouch() && extras.backstage.isContextMenuOpen()) {
@@ -256,8 +257,8 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
     // And everything else that gets toolbars from elsewhere only returns maximum 1 toolbar
     const anchor = getAnchor(toolbarApi[0].position, sElem);
 
-    lastAnchor.set(Optional.some((anchor)));
-    lastElement.set(elem);
+    lastAnchor = Optional.some((anchor));
+    lastElement = sElem;
     const contextBarEle = contextbar.element;
     Css.remove(contextBarEle, 'display');
     InlineView.showWithinBounds(contextbar, anchor, wrapInPopDialog(toolbarSpec), () => Optional.some(getBounds()));
@@ -268,9 +269,9 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
     }
   };
 
-  const launchContextToolbar = () => {
-    // Don't launch if the editor doesn't have focus
-    if (!editor.hasFocus()) {
+  const launchContextToolbar = Delay.debounce(() => {
+    // Don't launch if the editor doesn't have focus or has been destroyed
+    if (!editor.hasFocus() || editor.removed) {
       return;
     }
 
@@ -282,20 +283,7 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
         launchContext(info.toolbars, Optional.some(info.elem.dom));
       }
     );
-  };
-
-  const clearTimer = () => {
-    const current = timer.get();
-    if (current !== null) {
-      Delay.clearTimeout(current);
-      timer.set(null);
-    }
-  };
-
-  const asyncOpen = () => {
-    clearTimer();
-    timer.set(Delay.setEditorTimeout(editor, launchContextToolbar, 0));
-  };
+  }, 0);
 
   editor.on('init', () => {
     editor.on(hideContextToolbarEvent, forceHide);
@@ -304,7 +292,7 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
     // FIX: Make it go away when the action makes it go away. E.g. deleting a column deletes the table.
     editor.on('click keyup focus SetContent ObjectResized ResizeEditor', () => {
       // Fixing issue with chrome focus on img.
-      asyncOpen();
+      launchContextToolbar();
     });
 
     editor.on('focusout', (_e) => {
@@ -325,13 +313,13 @@ const register = (editor: Editor, registryContextToolbars, sink: AlloyComponent,
       if (event.state) {
         close();
       } else if (editor.hasFocus()) {
-        asyncOpen();
+        launchContextToolbar();
       }
     });
 
     editor.on('NodeChange', (_e) => {
       Focus.search(contextbar.element).fold(
-        asyncOpen,
+        launchContextToolbar,
         Fun.noop
       );
     });

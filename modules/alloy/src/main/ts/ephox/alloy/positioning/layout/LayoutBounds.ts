@@ -1,13 +1,13 @@
-import { Arr, Fun, Obj, Optional } from '@ephox/katamari';
+import { Arr, Obj, Optional } from '@ephox/katamari';
 import { SugarPosition } from '@ephox/sugar';
 import * as Boxes from '../../alien/Boxes';
 import { AnchorBox } from './LayoutTypes';
 
 export interface BoundsRestriction {
-  left: Optional<number>;
-  right: Optional<number>;
-  top: Optional<number>;
-  bottom: Optional<number>;
+  readonly left: Optional<number>;
+  readonly right: Optional<number>;
+  readonly top: Optional<number>;
+  readonly bottom: Optional<number>;
 }
 
 export const enum AnchorBoxBounds {
@@ -43,19 +43,20 @@ export const boundsRestriction = (
   )
 );
 
-export const adjustBounds = (bounds: Boxes.Bounds, boundsRestrictions: BoundsRestriction, bubbleOffsets: SugarPosition): Boxes.Bounds => {
+export const calcBounds = (bounds: Boxes.Bounds, restriction: BoundsRestriction, bubbleOffset: SugarPosition): Boxes.Bounds => {
   const applyRestriction = (dir: BoundsRestrictionKeys, current: number) => {
-    const bubbleOffset = dir === 'top' || dir === 'bottom' ? bubbleOffsets.top : bubbleOffsets.left;
-    return Obj.get(boundsRestrictions, dir).bind(Fun.identity)
-      .bind((restriction): Optional<number> => {
+    const offset = dir === 'top' || dir === 'bottom' ? bubbleOffset.top : bubbleOffset.left;
+    return Obj.get(restriction, dir)
+      .bind((restriction) => restriction.map((pos) => {
+        const posWithOffset = pos + offset;
+        const currentWithOffset = current + offset;
         // Ensure the restriction is within the current bounds
         if (dir === 'left' || dir === 'top') {
-          return restriction >= current ? Optional.some(restriction) : Optional.none();
+          return Math.max(posWithOffset, currentWithOffset, current);
         } else {
-          return restriction <= current ? Optional.some(restriction) : Optional.none();
+          return Math.min(posWithOffset, currentWithOffset, current);
         }
-      })
-      .map((restriction) => restriction + bubbleOffset)
+      }))
       .getOr(current);
   };
 
